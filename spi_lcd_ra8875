@@ -1,0 +1,396 @@
+/*
+
+
+#include "board.h"
+
+#ifdef RA_HARD_SPI	   /* 四线SPI接口模式 */
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_InitSPI
+*	功能说明: 配置STM32和RA8875的SPI口线，使能硬件SPI1, 片选由软件控制
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+
+
+lpspi_master_config_t lpspi3_config; //LPSPI3主机配置结构体
+void RA8875_InitSPI(void)
+{
+	
+    //设置LPSPI的时钟源为PLL1_PFD0/(1+5)=576Mhz/(1+5)=96MHz,W25Q256时钟最高104MHz
+    CLOCK_SetMux(kCLOCK_LpspiMux,1);    //USB1 PLL PFD0(576MHz)作为LPSPI时钟源
+    CLOCK_SetDiv(kCLOCK_LpspiDiv,5);    //分频设置，分频值为5+1，所以LPSPI CLK=576/(1+5)=96Mhz
+    
+    //配置IO作为LPSPI1，片选采用软件的，这样一个SPI的外设就不会限制为4个!
+    IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_15_LPSPI3_SCK,0);                                    
+    IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_14_LPSPI3_SDO,0);                                    
+    IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_13_LPSPI3_SDI,0); 
+	 // IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_12_LPSPI3_PCS0,0);
+	//IOMUXC_GPIO_SD_B0_00_LPSPI1_SCK
+    //配置LPSPI引脚功能，
+    //低转换速度,驱动能力为R0/6,速度为100Mhz，开路输出，使能pull/keepr
+	//选择keeper功能，下拉100K Ohm，关闭Hyst
+    IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_15_LPSPI3_SCK,0x10B0);                              
+    IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_14_LPSPI3_SDO,0x10B0);                                                                              
+    IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_13_LPSPI3_SDI,0x10B0); 
+	  //IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_12_LPSPI3_PCS0,0x10B0);	
+		RA8875_LowSpeedSPI();
+//片选信号                              
+		gpio_pin_config_t spics_config;
+		
+		IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_12_GPIO1_IO28,0);
+		IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_12_GPIO1_IO28,0x10B0); 
+			
+		spics_config.direction=kGPIO_DigitalOutput;	//输出
+		spics_config.interruptMode=kGPIO_NoIntmode;	//不使用中断功能
+		spics_config.outputLogic=0;					//默认高电平
+		GPIO_PinInit(GPIO1,28,&spics_config); 	    //初始化GPIO1_4
+		
+		
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_LowSpeedSPI
+*	功能说明: 配置STM32内部SPI硬件的工作模式、速度等参数，用于访问SPI接口的RA8875. 低速。
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_LowSpeedSPI(void)
+{
+
+    u32 lpspiclk=0;
+                              
+    //配置LPSPI1主模式
+    lpspiclk=(CLOCK_GetFreq(kCLOCK_Usb1PllPfd0Clk)/(( 5+ 1U)));//LPSPI1时钟
+    lpspi3_config.baudRate=2232000;               //SPI速度
+    lpspi3_config.whichPcs=kLPSPI_Pcs0;                 //片选信号，PCS1
+    lpspi3_config.pcsActiveHighOrLow=kLPSPI_PcsActiveLow;//片选信号低电平有效
+    lpspi3_config.bitsPerFrame=8;                       //设置SPI的数据大小:SPI发送接收8位帧结构
+    lpspi3_config.cpol=kLPSPI_ClockPolarityActiveHigh;   //串行同步时钟低电平有效
+    lpspi3_config.cpha=kLPSPI_ClockPhaseFirstEdge;      //串行同步时钟的第二个跳变沿（上升或下降）数据被采样
+    lpspi3_config.direction=kLPSPI_MsbFirst;            //指定数据传输从MSB位还是LSB位开始:数据传输从MSB位开始
+    lpspi3_config.pinCfg=kLPSPI_SdiInSdoOut;            //SDI输入引脚，SDO输出引脚
+    lpspi3_config.dataOutConfig=kLpspiDataOutRetained;  //输出数据保留
+    lpspi3_config.pcsToSckDelayInNanoSec=10;            //片选拉低到时钟有效之间的延时时间,单位ns
+    lpspi3_config.lastSckToPcsDelayInNanoSec=10;        //最后一个时钟到片选拉高之间的延时，单位ns
+    lpspi3_config.betweenTransferDelayInNanoSec=10;     //两次传输之间的延时，单位ns
+    LPSPI_MasterInit(LPSPI3,&lpspi3_config,lpspiclk);
+   // LPSPI_Enable(LPSPI3,false);    
+	
+		LPSPI_Enable(LPSPI3,true);       
+
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_HighSpeedSPI
+*	功能说明: 配置STM32内部SPI硬件的工作模式、速度等参数，用于访问SPI接口的RA8875.
+*			  初始化完成后，可以将SPI切换到高速模式，以提高刷屏效率。
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_HighSpeedSPI(void)
+{
+    u32 lpspiclk=0;
+                             
+    //配置LPSPI1主模式
+    lpspiclk=(CLOCK_GetFreq(kCLOCK_Usb1PllPfd0Clk)/((EXAMPLE_LPSPI_CLOCK_SOURCE_DIVIDER + 1U)));//LPSPI1时钟
+    lpspi3_config.baudRate=9000000;               //SPI速度
+    lpspi3_config.whichPcs=kLPSPI_Pcs0;                 //片选信号，PCS1
+    lpspi3_config.pcsActiveHighOrLow=kLPSPI_PcsActiveLow;//片选信号低电平有效
+    lpspi3_config.bitsPerFrame=8;                       //设置SPI的数据大小:SPI发送接收8位帧结构
+    lpspi3_config.cpol=kLPSPI_ClockPolarityActiveHigh;   //串行同步时钟低电平有效
+    lpspi3_config.cpha=kLPSPI_ClockPhaseFirstEdge;      //串行同步时钟的第二个跳变沿（上升或下降）数据被采样
+    lpspi3_config.direction=kLPSPI_MsbFirst;            //指定数据传输从MSB位还是LSB位开始:数据传输从MSB位开始
+    lpspi3_config.pinCfg=kLPSPI_SdiInSdoOut;            //SDI输入引脚，SDO输出引脚
+    lpspi3_config.dataOutConfig=kLpspiDataOutRetained;  //输出数据保留
+    lpspi3_config.pcsToSckDelayInNanoSec=10;            //片选拉低到时钟有效之间的延时时间,单位ns
+    lpspi3_config.lastSckToPcsDelayInNanoSec=10;        //最后一个时钟到片选拉高之间的延时，单位ns
+    lpspi3_config.betweenTransferDelayInNanoSec=10;     //两次传输之间的延时，单位ns
+	
+    LPSPI_MasterInit(LPSPI3,&lpspi3_config,lpspiclk);
+    
+//	LPSPI_Enable(LPSPI3,false);    
+	
+		LPSPI_Enable(LPSPI3,true);     
+	
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: SPI_ShiftByte
+*	功能说明: 向SPI总线发送一个字节，同时返回接收到的字节
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+
+//LPSPI1 读写一个字节
+//TxData:要写入的字节
+//返回值:读取到的字节
+uint8_t SPI_ShiftByte(uint8_t _ucByte)
+{ 
+    u8 ucRxByte = 0;
+    u8 spitxdata=_ucByte;
+    lpspi_transfer_t spi_tranxfer;
+    
+    spi_tranxfer.configFlags=kLPSPI_MasterPcs0|kLPSPI_MasterPcsContinuous;     //PCS1
+    spi_tranxfer.txData=&spitxdata;                 //要发送的数据
+    spi_tranxfer.rxData=&ucRxByte;                 //接收到的数据
+    spi_tranxfer.dataSize=1;                        //数据长度
+    LPSPI_MasterTransferBlocking(LPSPI3,&spi_tranxfer);	    //SPI阻塞发送   					    
+    return ucRxByte;
+}
+/*
+unsigned char LPSPI1_ReadWriteByte(unsigned char data)
+{ 
+    unsigned char spirxdata=0;
+    lpspi_transfer_t spi_tranxfer;
+    
+    spi_tranxfer.configFlags=kLPSPI_MasterPcs0|kLPSPI_MasterPcsContinuous;
+    spi_tranxfer.txData=&data;
+    spi_tranxfer.rxData=&spirxdata;
+    spi_tranxfer.dataSize=1;
+    LPSPI_MasterTransferBlocking(LPSPI1,&spi_tranxfer);           
+    return spirxdata;
+}
+
+*/
+#endif
+
+#ifdef RA_HARD_SPI	/* 硬件 SPI 界面 (需要改变RA8875屏上的2个电阻位置) */
+
+	#define RA8875_CS_0()		GPIO_PinWrite(GPIO1,28,0)
+	#define RA8875_CS_1()		GPIO_PinWrite(GPIO1,28,1)
+	//#define	W25QXX_CS(n)    (n?GPIO_PinWrite(GPIO1,4,1):GPIO_PinWrite(GPIO1,4,0)) 		//W25QXX的片选信号
+
+	
+	#define SPI_WRITE_DATA	0x00
+	#define SPI_READ_DATA	0x40
+	#define SPI_WRITE_CMD	0x80
+	#define SPI_READ_STATUS	0xC0
+
+	static uint8_t SPI_ShiftByte(uint8_t _ucByte);
+#endif
+
+
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_Delaly1us
+*	功能说明: 延迟函数, 不准, 主要用于RA8875 PLL启动之前发送指令间的延迟
+*	形    参: 无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_Delaly1us(void)
+{
+	uint8_t i;
+
+	for (i = 0; i < 10; i++);	/* 延迟, 不准 */
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_Delaly1ms
+*	功能说明: 延迟函数.  主要用于RA8875 PLL启动之前发送指令间的延迟
+*	形    参: 无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_Delaly1ms(void)
+{
+	uint16_t i;
+
+	for (i = 0; i < 5000; i++);	/* 延迟, 不准 */
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_WriteCmd
+*	功能说明: 写RA8875指令寄存器
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_WriteCmd(uint8_t _ucRegAddr)
+{
+#ifdef RA_HARD_SPI	/* 硬件SPI接口 */
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_WRITE_CMD);
+	SPI_ShiftByte(_ucRegAddr);
+	RA8875_CS_1();
+#endif
+
+#ifdef RA_HARD_8080_16			/* 8080硬件总线 */
+	RA8875_REG = _ucRegAddr;	/* 设置寄存器地址 */
+#endif
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_WriteData
+*	功能说明: 写RA8875指令寄存器
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_WriteData(uint8_t _ucRegValue)
+{
+#ifdef RA_HARD_SPI	/* 硬件SPI接口 */
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_WRITE_DATA);
+	SPI_ShiftByte(_ucRegValue);
+	RA8875_CS_1();
+#endif
+
+#ifdef RA_HARD_8080_16			/* 8080硬件总线 */
+	RA8875_RAM = _ucRegValue;	/* 设置寄存器地址 */
+#endif
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_ReadData
+*	功能说明: 读RA8875寄存器值
+*	形    参: 无
+*	返 回 值: 寄存器值
+*********************************************************************************************************
+*/
+uint8_t RA8875_ReadData(void)
+{
+#ifdef RA_HARD_SPI	/* 硬件SPI接口 */
+	uint16_t value;
+
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_READ_DATA);
+	value = SPI_ShiftByte(0x00);
+	RA8875_CS_1();
+
+	return value;
+#endif
+
+#ifdef RA_HARD_8080_16			/* 8080硬件总线 */
+	uint8_t value;
+
+	value = RA8875_RAM;		/* 读取寄存器值 */
+
+	return value;
+#endif
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_WriteData16
+*	功能说明: 写RA8875数据总线，16bit，用于RGB显存写入
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+void RA8875_WriteData16(uint16_t _usRGB)
+{
+#ifdef RA_HARD_SPI	/* 硬件SPI接口 */
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_WRITE_DATA);
+	SPI_ShiftByte(_usRGB >> 8);
+	RA8875_CS_1();
+
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_WRITE_DATA);
+	SPI_ShiftByte(_usRGB);
+	RA8875_CS_1();
+#endif
+
+#ifdef RA_HARD_8080_16		/* 8080硬件总线 */
+	RA8875_RAM = _usRGB;	/* 设置寄存器地址 */
+#endif
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_ReadData16
+*	功能说明: 读RA8875显存，16bit RGB
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+uint16_t RA8875_ReadData16(void)
+{
+#ifdef RA_HARD_SPI	/* 硬件SPI接口 */
+	uint16_t value;
+
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_READ_DATA);
+	value = SPI_ShiftByte(0x00);
+	value <<= 8;
+	value += SPI_ShiftByte(0x00);
+	RA8875_CS_1();
+
+	return value;
+#endif
+
+#ifdef RA_HARD_8080_16			/* 8080硬件总线 */
+	uint16_t value;
+
+	value = RA8875_RAM;		/* 读取寄存器值 */
+
+	return value;
+#endif
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_ReadStatus
+*	功能说明: 读RA8875状态寄存器
+*	形    参:  无
+*	返 回 值: 无
+*********************************************************************************************************
+*/
+uint8_t RA8875_ReadStatus(void)
+{
+#ifdef RA_HARD_SPI	/* 硬件SPI接口 */
+	uint8_t value;
+
+	RA8875_CS_0();
+	SPI_ShiftByte(SPI_READ_STATUS);
+	value = SPI_ShiftByte(0x00);
+	RA8875_CS_1();
+
+	return value;
+#endif
+
+#ifdef RA_HARD_8080_16			/* 8080硬件总线 */
+	uint8_t value;
+
+	value = RA8875_REG;
+
+	return value;
+#endif
+}
+
+/*
+*********************************************************************************************************
+*	函 数 名: RA8875_GetDispMemAddr
+*	功能说明: 获得显存地址。
+*	形    参: 无
+*	返 回 值: 显存地址
+*********************************************************************************************************
+*/
+uint32_t RA8875_GetDispMemAddr(void)
+{
+	#ifdef RA_HARD_8080_16		/* 8080硬件总线 （安富莱RA8875屏缺省模式） */
+		return RA8875_RAM_ADDR;
+	
+	#else
+		return 0;
+	#endif
+}
+
+
+
+
